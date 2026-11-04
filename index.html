@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0d10">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<title>Трихоскоп</title>
+<style>
+  :root{--bg:#0b0d10;--panel:#15191e;--line:#262c33;--fg:#eef1f4;--muted:#8b949e;--accent:#3fb6a8;--danger:#e5534b}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  [hidden]{display:none!important}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  header{display:flex;gap:8px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line)}
+  header h1{font-size:16px;margin:0 auto 0 0;font-weight:600}
+  select,button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  select{max-width:52vw}
+  button{cursor:pointer}
+  button:active{transform:scale(.97)}
+  #stage{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden}
+  video{max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain;transform-origin:center}
+  #msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:14px;color:var(--muted)}
+  #msg b{color:var(--fg);font-size:17px}
+  #msg button{background:var(--accent);border-color:var(--accent);color:#04201d;font-weight:600;padding:12px 20px}
+  #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .25s}
+  #info{position:absolute;left:10px;top:10px;font-size:12px;color:#cfd6dd;background:#0009;padding:3px 8px;border-radius:8px}
+  .bar{display:flex;align-items:center;justify-content:center;gap:14px;padding:12px}
+  #shot{width:72px;height:72px;border-radius:50%;background:#fff;border:5px solid #9aa4ad;padding:0}
+  #shot:disabled{opacity:.35}
+  .tool{width:48px;height:48px;border-radius:50%;padding:0;font-size:20px}
+  #gallery{display:flex;gap:8px;overflow-x:auto;padding:0 12px 12px;min-height:0}
+  #gallery:empty{display:none}
+  .thumb{position:relative;flex:0 0 auto}
+  .thumb img{height:72px;border-radius:8px;border:1px solid var(--line);display:block}
+  .thumb.sel img{outline:3px solid var(--accent)}
+  #actions{display:none;flex-wrap:wrap;gap:8px;justify-content:center;padding:0 12px 12px}
+  #actions.on{display:flex}
+  #actions .danger{color:var(--danger)}
+  #viewer{position:fixed;inset:0;background:#000e;display:none;flex-direction:column;z-index:10}
+  #viewer.on{display:flex}
+  #viewer img{flex:1;min-height:0;object-fit:contain;width:100%}
+  #viewer .bar{flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>Трихоскоп</h1>
+  <select id="cam" aria-label="Камера"></select>
+</header>
+
+<div id="stage">
+  <video id="video" playsinline autoplay muted></video>
+  <div id="info" hidden></div>
+  <div id="flash"></div>
+  <div id="msg">
+    <b>Подключите трихоскоп и нажмите «Включить камеру»</b>
+    <span>Браузер спросит разрешение на камеру — разрешите.</span>
+    <button id="start">Включить камеру</button>
+  </div>
+</div>
+
+<div class="bar">
+  <button class="tool" id="mirror" title="Отразить">⇋</button>
+  <button class="tool" id="rotate" title="Повернуть">⟳</button>
+  <button id="shot" title="Сделать фото" aria-label="Сделать фото" disabled></button>
+  <button class="tool" id="refresh" title="Обновить список камер">↻</button>
+  <button class="tool" id="full" title="Во весь экран">⤢</button>
+</div>
+
+<div id="gallery"></div>
+<div id="actions">
+  <button id="allPdf">Все фото → PDF</button>
+  <button id="allZip" hidden>Все JPG</button>
+  <button id="clear" class="danger">Очистить</button>
+</div>
+
+<div id="viewer">
+  <img id="vimg" alt="">
+  <div class="bar">
+    <button id="vJpg">Скачать JPG</button>
+    <button id="vPdf">Скачать PDF</button>
+    <button id="vShare" hidden>Поделиться / Сохранить</button>
+    <button id="vDel" class="danger">Удалить</button>
+    <button id="vClose">Закрыть</button>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const video = $('#video'), camSel = $('#cam'), msg = $('#msg'), info = $('#info');
+let stream = null, mirror = false, rot = 0, photos = [], current = -1;
+
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch { return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch {} }
+};
+
+function showMsg(title, sub, btn = 'Включить камеру'){
+  msg.hidden = false;
+  msg.querySelector('b').textContent = title;
+  msg.querySelector('span').textContent = sub || '';
+  $('#start').textContent = btn;
+}
+
+// Built-in phone/laptop cameras usually carry these words; an external microscope usually doesn't.
+const BUILTIN = /front|back|rear|facetime|передн|задн|фронт|тыл|ultra|telephoto|desk view|true ?depth|webcam c9|camera2 [01],/i;
+const EXTERNAL = /usb|uvc|external|внешн|microscope|scope|derm|tricho|endoscope|digital/i;
+
+async function listCams(){
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+  const prev = camSel.value;
+  camSel.innerHTML = '';
+  devs.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || ('Камера ' + (i + 1));
+    camSel.appendChild(o);
+  });
+  return { devs, prev };
+}
+
+function pickCam(devs){
+  const saved = store.get('camId');
+  if (saved && devs.some(d => d.deviceId === saved)) return saved;
+  const ext = devs.find(d => EXTERNAL.test(d.label)) || devs.find(d => d.label && !BUILTIN.test(d.label));
+  return (ext || devs[devs.length - 1] || {}).deviceId;
+}
+
+function stop(){
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+}
+
+async function open(deviceId){
+  stop();
+  const v = { width:{ideal:1920}, height:{ideal:1080} };
+  if (deviceId) v.deviceId = { exact: deviceId };
+  stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  const track = stream.getVideoTracks()[0];
+  const s = track.getSettings();
+  if (s.deviceId) { camSel.value = s.deviceId; store.set('camId', s.deviceId); }
+  msg.hidden = true;
+  $('#shot').disabled = false;
+  const upd = () => { info.hidden = false; info.textContent = (track.label || 'Камера') + ' · ' + video.videoWidth + '×' + video.videoHeight; };
+  video.onloadedmetadata = upd; if (video.videoWidth) upd();
+  track.onended = () => { $('#shot').disabled = true; info.hidden = true; showMsg('Камера отключена', 'Переподключите трихоскоп и нажмите кнопку', 'Подключить снова'); };
+}
+
+async function start(){
+  if (!navigator.mediaDevices?.getUserMedia){
+    showMsg('Браузер не даёт доступ к камере', location.protocol === 'https:' || location.hostname === 'localhost' ? 'Откройте страницу в Safari или Chrome.' : 'Страницу нужно открыть по https://', 'Повторить');
+    return;
+  }
+  try {
+    // First call unlocks camera labels; then switch to the most likely external camera.
+    let { devs } = await listCams();
+    if (!devs.some(d => d.label)) { await open(); ({ devs } = await listCams()); }
+    const id = pickCam(devs);
+    const cur = stream?.getVideoTracks()[0]?.getSettings().deviceId;
+    if (id && id !== cur) await open(id);
+    else if (!stream) await open(id);
+    camSel.value = id || camSel.value;
+    if (devs.length < 2 && /iPhone/.test(navigator.userAgent))
+      setTimeout(() => alert('Видна только встроенная камера iPhone. iPhone не поддерживает внешние USB-камеры на уровне iOS — для USB-трихоскопа нужен iPad с USB-C, Android или компьютер.'), 300);
+  } catch (e) {
+    console.error(e);
+    const n = e.name;
+    if (n === 'NotAllowedError') showMsg('Доступ к камере запрещён', 'Разрешите камеру в настройках браузера для этого сайта и нажмите кнопку.', 'Повторить');
+    else if (n === 'NotFoundError' || n === 'OverconstrainedError') showMsg('Камера не найдена', 'Проверьте кабель/переходник трихоскопа и нажмите кнопку.', 'Повторить');
+    else if (n === 'NotReadableError') showMsg('Камера занята', 'Закройте другие приложения, использующие камеру.', 'Повторить');
+    else showMsg('Ошибка: ' + n, e.message, 'Повторить');
+  }
+}
+
+$('#start').onclick = start;
+camSel.onchange = () => open(camSel.value).catch(e => showMsg('Не удалось открыть камеру', e.message, 'Повторить'));
+$('#refresh').onclick = async () => { await listCams(); const id = stream?.getVideoTracks()[0]?.getSettings().deviceId; if (id) camSel.value = id; };
+navigator.mediaDevices?.addEventListener?.('devicechange', async () => {
+  const { devs } = await listCams();
+  const id = stream?.getVideoTracks()[0]?.getSettings().deviceId;
+  if (id && devs.some(d => d.deviceId === id)) camSel.value = id;
+  else if (devs.length) start();
+});
+
+function applyTransform(){ video.style.transform = `rotate(${rot}deg) scaleX(${mirror ? -1 : 1})`; }
+$('#mirror').onclick = () => { mirror = !mirror; applyTransform(); };
+$('#rotate').onclick = () => { rot = (rot + 90) % 360; applyTransform(); };
+$('#full').onclick = () => {
+  const el = $('#stage');
+  if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  else if (el.requestFullscreen) el.requestFullscreen();
+  else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+};
+
+// ---------- capture ----------
+function stamp(){
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
+$('#shot').onclick = async () => {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w) return;
+  const side = rot % 180 !== 0;
+  const c = document.createElement('canvas');
+  c.width = side ? h : w; c.height = side ? w : h;
+  const g = c.getContext('2d');
+  g.translate(c.width / 2, c.height / 2);
+  g.rotate(rot * Math.PI / 180);
+  g.scale(mirror ? -1 : 1, 1);
+  g.drawImage(video, -w / 2, -h / 2, w, h);
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.95));
+  const f = $('#flash'); f.style.transition = 'none'; f.style.opacity = .8;
+  requestAnimationFrame(() => { f.style.transition = 'opacity .25s'; f.style.opacity = 0; });
+  photos.push({ blob, url: URL.createObjectURL(blob), w: c.width, h: c.height, name: 'tricho_' + stamp(), date: new Date() });
+  renderGallery();
+};
+
+function renderGallery(){
+  const gal = $('#gallery');
+  gal.innerHTML = '';
+  photos.forEach((p, i) => {
+    const d = document.createElement('div');
+    d.className = 'thumb';
+    const im = new Image(); im.src = p.url; im.alt = p.name;
+    im.onclick = () => openViewer(i);
+    d.appendChild(im); gal.appendChild(d);
+  });
+  gal.scrollLeft = gal.scrollWidth;
+  $('#actions').classList.toggle('on', photos.length > 0);
+}
+
+// ---------- viewer ----------
+function openViewer(i){ current = i; $('#vimg').src = photos[i].url; $('#viewer').classList.add('on'); }
+$('#vClose').onclick = () => $('#viewer').classList.remove('on');
+$('#vDel').onclick = () => {
+  URL.revokeObjectURL(photos[current].url);
+  photos.splice(current, 1); renderGallery(); $('#viewer').classList.remove('on');
+};
+$('#vJpg').onclick = () => save(photos[current].blob, photos[current].name + '.jpg');
+$('#vPdf').onclick = async () => save(await makePdf([photos[current]]), photos[current].name + '.pdf');
+$('#allPdf').onclick = async () => save(await makePdf(photos), 'tricho_' + stamp() + '_' + photos.length + 'шт.pdf');
+$('#clear').onclick = () => { if (confirm('Удалить все снимки из приложения?')) { photos.forEach(p => URL.revokeObjectURL(p.url)); photos = []; renderGallery(); } };
+
+const canShareFiles = (() => { try { return !!navigator.canShare && navigator.canShare({ files: [new File([''], 'a.jpg', { type: 'image/jpeg' })] }); } catch { return false; } })();
+if (canShareFiles) {
+  $('#vShare').hidden = false;
+  $('#vShare').onclick = async () => {
+    const p = photos[current];
+    try { await navigator.share({ files: [new File([p.blob], p.name + '.jpg', { type: 'image/jpeg' })] }); } catch {}
+  };
+}
+
+function save(blob, filename){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+
+// ---------- minimal PDF writer: one A4 page per photo, JPEG embedded as-is ----------
+async function makePdf(list){
+  const enc = new TextEncoder();
+  const chunks = []; let len = 0; const offs = [];
+  const push = x => { const b = typeof x === 'string' ? enc.encode(x) : x; chunks.push(b); len += b.length; };
+  const PW = 595.28, PH = 841.89, M = 36;
+  const n = list.length;
+  // objects: 1 catalog, 2 pages, 3 font, then per page: page, content, image
+  const pageIds = list.map((_, i) => 4 + i * 3);
+  const obj = (id, body) => { offs[id] = len; push(`${id} 0 obj\n`); body(); push('\nendobj\n'); };
+  push('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  obj(1, () => push('<< /Type /Catalog /Pages 2 0 R >>'));
+  obj(2, () => push(`<< /Type /Pages /Kids [${pageIds.map(i => i + ' 0 R').join(' ')}] /Count ${n} >>`));
+  obj(3, () => push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'));
+  for (let i = 0; i < n; i++) {
+    const p = list[i], pid = pageIds[i], cid = pid + 1, iid = pid + 2;
+    const jpg = new Uint8Array(await p.blob.arrayBuffer());
+    const maxW = PW - 2 * M, maxH = PH - 2 * M - 40;
+    const k = Math.min(maxW / p.w, maxH / p.h);
+    const dw = p.w * k, dh = p.h * k, x = (PW - dw) / 2, y = PH - M - dh;
+    const d = p.date, pad = v => String(v).padStart(2, '0');
+    const label = `Trichoscope  ${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}   ${p.w}x${p.h}   ${i+1}/${n}`;
+    const content = `q ${dw.toFixed(2)} 0 0 ${dh.toFixed(2)} ${x.toFixed(2)} ${y.toFixed(2)} cm /Im0 Do Q\nBT /F1 10 Tf ${M} ${M} Td (${label}) Tj ET`;
+    obj(pid, () => push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW} ${PH}] /Resources << /Font << /F1 3 0 R >> /XObject << /Im0 ${iid} 0 R >> >> /Contents ${cid} 0 R >>`));
+    obj(cid, () => { push(`<< /Length ${enc.encode(content).length} >>\nstream\n`); push(content); push('\nendstream'); });
+    obj(iid, () => { push(`<< /Type /XObject /Subtype /Image /Width ${p.w} /Height ${p.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpg.length} >>\nstream\n`); push(jpg); push('\nendstream'); });
+  }
+  const total = 4 + n * 3;
+  const xref = len;
+  let t = `xref\n0 ${total}\n0000000000 65535 f \n`;
+  for (let i = 1; i < total; i++) t += String(offs[i]).padStart(10, '0') + ' 00000 n \n';
+  push(t + `trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return new Blob(chunks, { type: 'application/pdf' });
+}
+
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+// Auto-start if permission was already granted earlier.
+navigator.permissions?.query({ name: 'camera' }).then(s => { if (s.state === 'granted') start(); }).catch(() => {});
+</script>
+</body>
+</html>
